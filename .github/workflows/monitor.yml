@@ -1,0 +1,52 @@
+name: product tracker
+
+on:
+  schedule:
+    - cron: "11 * * * *"          # hourly fallback
+  workflow_dispatch:
+    inputs:
+      summary:
+        description: "Send a summary this run"
+        type: boolean
+        default: false
+  repository_dispatch:
+    types: [summary, check]        # external precise trigger (cron-job.org)
+
+permissions:
+  contents: write
+
+concurrency:
+  group: product-tracker
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Run monitor
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SEND_SUMMARY: ${{ (github.event.action == 'summary' || github.event.inputs.summary == 'true') && '1' || '0' }}
+          CHECKS_PER_RUN: ${{ (github.event.action == 'summary' || github.event.inputs.summary == 'true') && '1' || '4' }}
+          CHECK_INTERVAL_SECONDS: "900"
+          PYTHONUNBUFFERED: "1"
+        run: |
+          mkdir -p state
+          python monitor.py
+      - name: Commit state
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdir -p state
+          git add -A state
+          git diff --cached --quiet || git commit -m "chore: update state [skip ci]"
+          for i in 1 2 3; do git push && break || (git pull --rebase --autostash || true; sleep 2); done
